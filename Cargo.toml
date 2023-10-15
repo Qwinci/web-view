@@ -17,6 +17,7 @@ boxfnonce = "0.1"
 tinyfiledialogs = "3.3"
 
 [features]
+default = ["edge"]
 edge = ["webview-sys/edge"]
 
 [workspace]

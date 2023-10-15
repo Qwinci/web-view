@@ -100,7 +100,7 @@ pub enum Content<T> {
 /// ```
 ///
 /// [`WebView`]: struct.WebView.html
-pub struct WebViewBuilder<'a, T: 'a, I, C> {
+pub struct WebViewBuilder<'a, T: 'a, I, C, N> {
     pub title: &'a str,
     pub content: Option<Content<C>>,
     pub width: i32,
@@ -108,6 +108,7 @@ pub struct WebViewBuilder<'a, T: 'a, I, C> {
     pub resizable: bool,
     pub debug: bool,
     pub invoke_handler: Option<I>,
+	pub navigation_handler: Option<N>,
     pub user_data: Option<T>,
     pub frameless: bool,
     pub visible: bool,
@@ -116,9 +117,10 @@ pub struct WebViewBuilder<'a, T: 'a, I, C> {
     pub hide_instead_of_close: bool,
 }
 
-impl<'a, T: 'a, I, C> Default for WebViewBuilder<'a, T, I, C>
+impl<'a, T: 'a, I, C, N> Default for WebViewBuilder<'a, T, I, C, N>
 where
     I: FnMut(&mut WebView<T>, &str) -> WVResult + 'a,
+	N: FnMut(&mut WebView<T>, &str) -> bool,
     C: AsRef<str>,
 {
     fn default() -> Self {
@@ -135,6 +137,7 @@ where
             resizable: true,
             debug,
             invoke_handler: None,
+			navigation_handler: None,
             user_data: None,
             frameless: false,
             visible: true,
@@ -145,9 +148,10 @@ where
     }
 }
 
-impl<'a, T: 'a, I, C> WebViewBuilder<'a, T, I, C>
+impl<'a, T: 'a, I, C, N> WebViewBuilder<'a, T, I, C, N>
 where
     I: FnMut(&mut WebView<T>, &str) -> WVResult + 'a,
+	N: FnMut(&mut WebView<T>, &str) -> bool + 'a,
     C: AsRef<str>,
 {
     /// Alias for [`WebViewBuilder::default()`].
@@ -240,6 +244,11 @@ where
         self.invoke_handler = Some(invoke_handler);
         self
     }
+	
+	pub fn navigation_handler(mut self, navigation_handler: N) -> Self {
+		self.navigation_handler = Some(navigation_handler);
+		self
+	}
 
     /// Sets the initial state of the user data. This is an arbitrary value stored on the WebView
     /// thread, accessible from dispatched closures without synchronization overhead.
@@ -267,6 +276,7 @@ where
         };
         let user_data = require_field!(user_data);
         let invoke_handler = require_field!(invoke_handler);
+		let navigation_handler = self.navigation_handler;
 
         WebView::new(
             &title,
@@ -282,6 +292,7 @@ where
             self.hide_instead_of_close,
             user_data,
             invoke_handler,
+			navigation_handler
         )
     }
 
@@ -299,9 +310,10 @@ where
 ///
 /// [`WebView`]: struct.Webview.html
 /// [`WebViewBuilder::default()`]: struct.WebviewBuilder.html#impl-Default
-pub fn builder<'a, T, I, C>() -> WebViewBuilder<'a, T, I, C>
+pub fn builder<'a, T, I, C, N>() -> WebViewBuilder<'a, T, I, C, N>
 where
     I: FnMut(&mut WebView<T>, &str) -> WVResult + 'a,
+	N: FnMut(&mut WebView<T>, &str) -> bool + 'a,
     C: AsRef<str>,
 {
     WebViewBuilder::new()
@@ -311,6 +323,7 @@ struct UserData<'a, T> {
     inner: T,
     live: Arc<RwLock<()>>,
     invoke_handler: Box<dyn FnMut(&mut WebView<T>, &str) -> WVResult + 'a>,
+	navigation_handler: Box<dyn FnMut(&mut WebView<T>, &str) -> bool + 'a>,
     result: WVResult,
 }
 
@@ -327,7 +340,7 @@ pub struct WebView<'a, T: 'a> {
 
 impl<'a, T> WebView<'a, T> {
     #![cfg_attr(feature = "cargo-clippy", allow(clippy::too_many_arguments))]
-    fn new<I>(
+    fn new<I, N>(
         title: &CStr,
         url: &CStr,
         width: i32,
@@ -341,14 +354,22 @@ impl<'a, T> WebView<'a, T> {
         hide_instead_of_close: bool,
         user_data: T,
         invoke_handler: I,
+		navigation_handler: Option<N>
     ) -> WVResult<WebView<'a, T>>
     where
         I: FnMut(&mut WebView<T>, &str) -> WVResult + 'a,
+		N: FnMut(&mut WebView<T>, &str) -> bool + 'a
     {
+		let navigation_handler: Box<dyn FnMut(&mut WebView<T>, &str) -> bool + 'a> = if let Some(handler) = navigation_handler {
+			Box::new(handler)
+		} else {
+			Box::new(|_, _| false)
+		};
         let user_data = Box::new(UserData {
             inner: user_data,
             live: Arc::new(RwLock::new(())),
             invoke_handler: Box::new(invoke_handler),
+			navigation_handler,
             result: Ok(()),
         });
         let user_data_ptr = Box::into_raw(user_data);
@@ -367,6 +388,7 @@ impl<'a, T> WebView<'a, T> {
                 min_height,
                 hide_instead_of_close as _,
                 Some(ffi_invoke_handler::<T>),
+				Some(ffi_navigation_handler::<T>),
                 user_data_ptr as _,
             );
 
@@ -670,4 +692,14 @@ extern "C" fn ffi_invoke_handler<T>(webview: *mut CWebView, arg: *const c_char) 
         // Do not clean up the webview on drop of the temporary WebView in handle
         handle.inner = None;
     }
+}
+
+extern "C" fn ffi_navigation_handler<T>(webview: *mut CWebView, arg: *const c_char) -> bool {
+	unsafe {
+		let uri = CStr::from_ptr(arg).to_string_lossy().to_string();
+		let mut handle = WebView::<T>::from_ptr(webview);
+		let result = ((*handle.user_data_wrapper_ptr()).navigation_handler)(&mut handle, &uri);
+		handle.inner = None;
+		result
+	}
 }

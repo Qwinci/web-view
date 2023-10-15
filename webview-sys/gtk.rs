@@ -13,6 +13,7 @@ use std::ptr;
 use webkit2gtk_sys::*;
 
 type ExternalInvokeCallback = extern "C" fn(webview: *mut WebView, arg: *const c_char);
+type NavigationCallback = extern "C" fn(webview: *mut WebView, arg: *const c_char) -> bool;
 
 #[repr(C)]
 struct WebView {
@@ -28,6 +29,7 @@ struct WebView {
     min_height: c_int,
     hide_instead_of_close: c_int,
     external_invoke_cb: ExternalInvokeCallback,
+	navigation_cb: NavigationCallback,
     window: *mut GtkWidget,
     scroller: *mut GtkWidget,
     webview: *mut GtkWidget,
@@ -100,6 +102,7 @@ unsafe extern "C" fn webview_new(
     min_height: c_int,
     hide_instead_of_close: c_int,
     external_invoke_cb: ExternalInvokeCallback,
+	navigation_cb: NavigationCallback,
     userdata: *mut c_void,
 ) -> *mut WebView {
     let w = Box::new(WebView {
@@ -115,6 +118,7 @@ unsafe extern "C" fn webview_new(
         min_height,
         hide_instead_of_close,
         external_invoke_cb,
+		navigation_cb,
         window: ptr::null_mut(),
         scroller: ptr::null_mut(),
         webview: ptr::null_mut(),
@@ -209,6 +213,16 @@ unsafe extern "C" fn webview_new(
         None,
         0,
     );
+	
+	g_signal_connect_data(
+		mem::transmute(webview),
+		CStr::from_bytes_with_nul_unchecked(b"decide-policy\0").as_ptr(),
+		Some(mem::transmute(decide_policy_cb as *const ())),
+		mem::transmute(w),
+		None,
+		0
+	);
+	
     gtk_container_add(mem::transmute(scroller), webview);
 
     let settings = webkit_web_view_get_settings(mem::transmute(webview));
@@ -282,6 +296,24 @@ unsafe extern "C" fn external_message_received_cb(
     s.reserve(n);
     JSStringGetUTF8CString(js, s.as_mut_ptr(), n);
     ((*webview).external_invoke_cb)(webview, s.as_ptr());
+}
+
+unsafe extern "C" fn decide_policy_cb(
+	_web_view: *mut WebKitWebView,
+	decision: *mut WebKitPolicyDecision,
+	t: WebKitPolicyDecisionType,
+	arg: gpointer
+) -> gboolean {
+	if t == WEBKIT_POLICY_DECISION_TYPE_NAVIGATION_ACTION {
+		let decision: *mut WebKitNavigationPolicyDecision = mem::transmute(decision);
+		let webview: *mut WebView = mem::transmute(arg);
+		let nav_action = webkit_navigation_policy_decision_get_navigation_action(decision);
+		let nav_request = webkit_navigation_action_get_request(nav_action);
+		let uri = webkit_uri_request_get_uri(nav_request);
+		((*webview).navigation_cb)(webview, uri) as gboolean
+	} else {
+		0
+	}
 }
 
 #[no_mangle]

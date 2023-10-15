@@ -13,6 +13,7 @@ use std::os::raw::*;
 pub enum CWebView {} // opaque type, only used in ffi pointers
 
 type ErasedExternalInvokeFn = extern "C" fn(webview: *mut CWebView, arg: *const c_char);
+type ErasedNavigationFn = extern "C" fn(webview: *mut CWebView, uri: *const c_char) -> bool;
 type ErasedDispatchFn = extern "C" fn(webview: *mut CWebView, arg: *mut c_void);
 
 extern "C" {
@@ -30,6 +31,7 @@ extern "C" {
         min_height: c_int,
         hide_instead_of_close: c_int,
         external_invoke_cb: Option<ErasedExternalInvokeFn>,
+		navigation_cb: Option<ErasedNavigationFn>,
         userdata: *mut c_void,
     ) -> *mut CWebView;
     pub fn webview_loop(this: *mut CWebView, blocking: c_int) -> c_int;
